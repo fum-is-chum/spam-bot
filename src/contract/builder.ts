@@ -16,9 +16,18 @@ export const SpamTxBuilder = {
       []
     )
   },
-  // claim_reward: (tx: SuiTxBlock, userCounter: SuiObjectArg) => {
-  //   return tx.moveCall(
-  //     `${SpamContract.id}::spam::claim_reward`,
-  //   )
-  // }
+  register_user_counter: (tx: SuiTxBlock, userCounter: SuiObjectArg) => {
+    return tx.moveCall(
+      `${SpamContract.id}::spam::register_user_counter`,
+      [DirectorObjectId, userCounter],
+      []
+    )
+  },
+  claim_reward: (tx: SuiTxBlock, userCounter: SuiObjectArg) => {
+    return tx.moveCall(
+      `${SpamContract.id}::spam::claim_user_counter`,
+      [DirectorObjectId, userCounter],
+      []
+    )
+  }
 }

@@ -1,4 +1,4 @@
-import { SuiObjectChange, SuiObjectData } from "@mysten/sui.js/client";
+import { SuiClient, SuiObjectChange, SuiObjectData } from "@mysten/sui.js/client";
 import { SUI_TYPE_ARG, SuiKit, SuiObjectArg, SuiTxBlock } from "@scallop-io/sui-kit";
 import BigNumber from "bignumber.js";
 import * as dotenv from "dotenv";
@@ -7,12 +7,12 @@ import { Logger } from "./utils/logger";
 import { ProtocolConfig } from "@mysten/sui.js/client";
 import { shuffle } from "./utils/common";
 import { SpamTxBuilder } from "./contract";
+import { SuiObjectRef } from "@mysten/sui.js/src/transactions";
 dotenv.config();
 
 const mnemonics = process.env.MNEMONICS!;
 const batchSize = +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
 
-// let gasCoins: null | CoinStruct[] = null;
 console.log(`Batch Size: ${batchSize}`);
 
 const suiKit: SuiKit = new SuiKit({
@@ -56,13 +56,19 @@ const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg, gasCoin?: S
       signature,
       options: {
         showEffects: true,
-        showObjectChanges: true,
       },
     });
 
     if (res.effects?.status.status === "success") {
       Logger.success(`Success spam: ${res.digest} with node ${suiKit.suiInteractor.currentFullNode}`);
-      return [...res.objectChanges!]; // [sui, counter]
+      return {
+        mutations: [
+          res.effects.gasObject.reference,
+          res.effects.mutated?.find((item) => item.reference.objectId !== res.effects?.gasObject.reference.objectId)
+            ?.reference,
+        ], // [gas, counter]
+        epoch: res.effects.executedEpoch,
+      };
     } else {
       console.error(res.errors ? res.errors[0] : "Error occurred");
       return undefined;
@@ -168,6 +174,100 @@ const getCounterObject = async (suiKit: SuiKit) => {
   throw new Error("Failed to create counter object");
 };
 
+const updateObject = async (obj: SuiObjectData, ref?: SuiObjectRef) => {
+  if(!ref) return;
+  obj.version = String(ref.version);
+  obj.digest = ref.digest;
+};
+
+const registerCounters = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
+  const tx = new SuiTxBlock();
+  tx.setSender(suiKit.currentAddress());
+  if (!!gasCoin) {
+    tx.setGasPayment([
+      {
+        objectId: gasCoin.objectId,
+        version: gasCoin.version,
+        digest: gasCoin.digest,
+      },
+    ]);
+  }
+
+  SpamTxBuilder.register_user_counter(tx, counter);
+  const txBuildBytes = await tx.txBlock.build({
+    client: suiKit.client(),
+    protocolConfig: await getProtocolConfig(),
+  });
+  const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
+  // const borrowFlashLoanResult = await suiKit.signAndSendTxn(tx);
+  const res = await suiKit.client().executeTransactionBlock({
+    transactionBlock: bytes,
+    signature,
+    options: {
+      showEffects: true,
+    },
+  });
+  if (res.effects?.status.status === "success") {
+    Logger.success(`Success register counter ${counter.objectId} : ${res.digest}`);
+    return {
+      mutations: [
+        res.effects.gasObject.reference,
+        res.effects.mutated?.find((item) => item.reference.objectId !== res.effects?.gasObject.reference.objectId)
+          ?.reference,
+      ], // [gas, counter]
+      epoch: res.effects.executedEpoch,
+    };
+  } else {
+    console.error(res.errors ? res.errors[0] : "Error occurred");
+    return undefined;
+  }
+};
+
+const claimReward = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
+  const tx = new SuiTxBlock();
+  tx.setSender(suiKit.currentAddress());
+  if (!!gasCoin) {
+    tx.setGasPayment([
+      {
+        objectId: gasCoin.objectId,
+        version: gasCoin.version,
+        digest: gasCoin.digest,
+      },
+    ]);
+  }
+
+  const spamCoin = SpamTxBuilder.claim_reward(tx, counter);
+  tx.transferObjects([spamCoin], suiKit.currentAddress());
+  const txBuildBytes = await tx.txBlock.build({
+    client: suiKit.client(),
+    protocolConfig: await getProtocolConfig(),
+  });
+  const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
+  // const borrowFlashLoanResult = await suiKit.signAndSendTxn(tx);
+  const res = await suiKit.client().executeTransactionBlock({
+    transactionBlock: bytes,
+    signature,
+    options: {
+      showEffects: true,
+    },
+  });
+  if (res.effects?.status.status === "success") {
+    Logger.success(`Success register counter ${counter.objectId} : ${res.digest}`);
+    return {
+      mutations: [
+        res.effects.gasObject.reference,
+        ...(res.effects.mutated
+          ?.filter((item) => item.reference.objectId !== res.effects?.gasObject.reference.objectId)
+          .map((item) => item.reference) ?? []),
+      ], // [gas, counter]
+      epoch: res.effects.executedEpoch,
+    };
+  } else {
+    console.error(res.errors ? res.errors[0] : "Error occurred");
+    return undefined;
+  }
+};
+
 const main = async () => {
   const targetAddresses = [];
   try {
@@ -225,8 +325,8 @@ const main = async () => {
 
     tasks = [];
     let results = [];
-
-    await getProtocolConfig();
+    let initialEpoch = 0;
+    let claimCnt = 0;
 
     let iter = 0;
     while (iter < +(process.env.ITER ?? 1)) {
@@ -235,25 +335,96 @@ const main = async () => {
       }
       results = await Promise.allSettled(tasks);
       await new Promise((resolve) => setTimeout(resolve, 1000));
+      let executedEpoch = 0;
       // update objects
       for (let i = 0; i < results.length; i++) {
         if (results[i].status === "fulfilled") {
-          let res = (results[i] as PromiseFulfilledResult<any>).value;
-          gasCoins[i] = res.find(
-            (item: SuiObjectChange) =>
-              "objectType" in item && item.objectType === "0x2::coin::Coin<0x2::sui::SUI>"
-          );
-          counters[i] = res.find(
-            (item: SuiObjectData) =>
-              "objectType" in item &&
-              item.objectType ===
-                "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter"
-          );
-          res = null;
+          const res = (results[i] as PromiseFulfilledResult<any>).value;
+          if (res) {
+            if (i === 0) {
+              if (initialEpoch === 0) {
+                initialEpoch = res.epoch;
+              }
+              executedEpoch = res.epoch;
+            }
+
+            if (res.mutations) {
+              if (res.mutations[0]) {
+                if (!gasCoins[i]) {
+                  gasCoins[i] = res.mutations[0];
+                } else {
+                  updateObject(gasCoins[i], res.mutations[0]);
+                }
+              }
+              if (res.mutations[1]) {
+                updateObject(counters[i], res.mutations[1]);
+              }
+            }
+            res.mutations = null;
+          }
         }
       }
+
       tasks = [];
       results = [];
+
+      // check epoch
+      if (executedEpoch === initialEpoch + 1) {
+        // register previous epoch count to counter object
+        tasks.push(
+          ...counters.map(async (counter, idx) => {
+            const res = await registerCounters(suiKits[idx], counter, gasCoins[idx]);
+            if (res && res.mutations) {
+              if (res.mutations[0]) {
+                if (!gasCoins[idx]) {
+                  gasCoins[idx] = res.mutations[0];
+                } else {
+                  updateObject(gasCoins[idx], res.mutations[0]);
+                }
+              }
+              if (res.mutations[1]) {
+                updateObject(counters[idx], res.mutations[1]);
+              }
+            }
+          })
+        );
+        await Promise.allSettled(tasks);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        tasks = [];
+        claimCnt++;
+        initialEpoch = executedEpoch;
+        // Nice to have: set a Telegram notification bot on error registering counter
+      }
+
+      // check for claim
+      if (claimCnt === 2) {
+        claimCnt = 0;
+
+        // claim $SPAM
+        tasks.push(
+          ...counters.map(async (counter, idx) => {
+            const res = await claimReward(suiKits[idx], counter, gasCoins[idx]);
+            if (res && res.mutations) {
+              if (res.mutations[0]) {
+                if (!gasCoins[idx]) {
+                  gasCoins[idx] = res.mutations[0];
+                } else {
+                  updateObject(gasCoins[idx], res.mutations[0]);
+                }
+              }
+              if (res.mutations[1]) {
+                updateObject(counters[idx], res.mutations.find((item) => item.objectId === counter.objectId));
+              }
+            }
+          })
+        );
+
+        await Promise.allSettled(tasks);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        tasks = [];
+      }
       iter++;
     }
   } catch (e) {
