@@ -2,14 +2,11 @@ import { CoinStruct, SuiObjectData } from "@mysten/sui.js/client";
 import { SUI_TYPE_ARG, SuiKit, SuiObjectArg, SuiTxBlock } from "@scallop-io/sui-kit";
 import BigNumber from "bignumber.js";
 import * as dotenv from "dotenv";
-import { coins } from "./coinTypes";
 import { MAIN_NODES } from "./const/rpc";
-import { Logger } from "./logger";
-import { getAllCoin } from "./tradeUtils";
+import { Logger } from "./utils/logger";
 import { ProtocolConfig } from "@mysten/sui.js/client";
 import { shuffle } from "./utils/common";
 import { SpamTxBuilder } from "./contract";
-import { decodeSuiPrivateKey } from "@mysten/sui.js/cryptography";
 dotenv.config();
 
 // const secretKey = process.env.secretKey;
@@ -111,62 +108,6 @@ const splitGasCoins = async (): Promise<boolean> => {
       }
       await new Promise((resolve) => setTimeout(resolve, 2000));
       return true;
-    }
-    return true;
-  } catch (error) {
-    console.error(error);
-    return false;
-  }
-};
-
-const mergeCoins = async (tx: SuiTxBlock = new SuiTxBlock()): Promise<boolean> => {
-  try {
-    const [userInCoins, userOutCoins] = await Promise.all([
-      getAllCoin(suiKit, suiKit.currentAddress(), coins["usdc"].address),
-      getAllCoin(suiKit, suiKit.currentAddress(), coins["usdt"].address),
-      //   getAllCoin(suiKit, suiKit.currentAddress(), coins["cetus"].address),
-      //   getAllCoin(suiKit, suiKit.currentAddress(), coins["eth"].address),
-    ]);
-
-    let hasMergeAction = false;
-    tx.setSender(suiKit.currentAddress());
-
-    if (userInCoins.length > 1) {
-      const targetCoins = userInCoins.map((coinStruct) => {
-        return tx!.txBlock.object(coinStruct.coinObjectId);
-      });
-      tx!.mergeCoins(targetCoins[0], targetCoins.slice(1, Math.min(500, targetCoins.length)));
-      hasMergeAction = true;
-    }
-    if (userOutCoins.length > 1) {
-      const targetCoins = userOutCoins.map((coinStruct) => {
-        return tx!.txBlock.object(coinStruct.coinObjectId);
-      });
-      tx!.mergeCoins(targetCoins[0], targetCoins.slice(1, Math.min(500, targetCoins.length)));
-      hasMergeAction = true;
-    }
-
-    if (hasMergeAction) {
-      const txBuildBytes = await tx.txBlock.build({
-        client: suiKit.client(),
-        protocolConfig: await getProtocolConfig(),
-      });
-      const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
-      const res = await suiKit.client().executeTransactionBlock({
-        transactionBlock: bytes,
-        signature,
-        options: {
-          showEffects: true,
-        },
-      });
-
-      if (res.effects && res.effects.status.status === "success") {
-        console.log(`success: ${res.digest}`);
-      } else {
-        console.error(`failed: ${res.digest}`);
-        return false;
-      }
-      await new Promise((resolve) => setTimeout(resolve, +(process.env.BATCH_INTERVAL ?? 2000)));
     }
     return true;
   } catch (error) {
@@ -341,11 +282,10 @@ const main = async () => {
 
     await getProtocolConfig();
 
-    let cnt = 0;
     let results = [];
-    let limit = 0;
+    let iter = 0;
 
-    while (limit === 0) {
+    while (iter === 0) {
       for (let i = 0; i < suiKits.length; i++) {
         tasks.push(Promise.race([executeSpam(suiKits[i], counters[i]), timeout(30000)]));
       }
@@ -362,26 +302,7 @@ const main = async () => {
         tasks = [];
         results = [];
       }
-
-      cnt++;
-      if (cnt > 5) {
-        // reset protocol config
-        protocolConfig = null;
-        await getProtocolConfig();
-        try {
-          if (!(await mergeCoins())) {
-            throw new Error("Failed to merge coins");
-          }
-        } finally {
-          await splitGasCoins();
-          gasCoins = (await getAllCoin(suiKit, suiKit.currentAddress(), SUI_TYPE_ARG)).filter((coin) => {
-            const amount = BigNumber(coin.balance).shiftedBy(-1 * 9);
-            return amount.gte(0.1);
-          });
-        }
-        cnt = 0;
-      }
-      limit++;
+      iter++;
     }
   } catch (e) {
     Logger.error(JSON.stringify(e));
