@@ -331,10 +331,11 @@ const main = async () => {
     let iter = 0;
     while (iter < +(process.env.ITER ?? 1)) {
       for (let i = 0; i < suiKits.length; i++) {
-        tasks.push(Promise.race([executeSpam(suiKits[i], counters[i], gasCoins[i]), timeout(10000)]));
+        tasks.push(executeSpam(suiKits[i], counters[i], gasCoins[i]));
       }
       results = await Promise.allSettled(tasks);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 3000)); // safe value to allow rpc to obtain changes from the transactions
+
       let executedEpoch = 0;
       // update objects
       for (let i = 0; i < results.length; i++) {

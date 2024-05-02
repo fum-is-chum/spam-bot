@@ -5,7 +5,7 @@ export const MAIN_NODES = [
   "https://sui-mainnet-endpoint.blockvision.org",
   "https://sui-mainnet.public.blastapi.io",
   "https://fullnode.mainnet.apis.scallop.io",
-  "https://mainnet.suiet.app",
+  // "https://mainnet.suiet.app",
   // "https://sui-rpc.publicnode.com",
   // "https://mainnet.sui.rpcpool.com",
   // "https://sui-mainnet-us-2.cosmostation.io",
