@@ -1,4 +1,4 @@
-import { CoinStruct, SuiObjectChange, SuiObjectData } from "@mysten/sui.js/client";
+import { SuiObjectChange, SuiObjectData } from "@mysten/sui.js/client";
 import { SUI_TYPE_ARG, SuiKit, SuiObjectArg, SuiTxBlock } from "@scallop-io/sui-kit";
 import BigNumber from "bignumber.js";
 import * as dotenv from "dotenv";
@@ -7,15 +7,8 @@ import { Logger } from "./utils/logger";
 import { ProtocolConfig } from "@mysten/sui.js/client";
 import { shuffle } from "./utils/common";
 import { SpamTxBuilder } from "./contract";
-import { SuiOwnedObject } from "@scallop-io/sui-kit/dist/libs/suiModel";
 dotenv.config();
 
-// const secretKey = process.env.secretKey;
-// const parsedSecretKey = secretKey!.startsWith("suiprivkey")
-//   ? Array.from(decodeSuiPrivateKey(secretKey!).secretKey)
-//       .map((b) => ("00" + b.toString(16)).slice(-2))
-//       .join("")
-//   : secretKey!;
 const mnemonics = process.env.MNEMONICS!;
 const batchSize = +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
 
@@ -78,52 +71,6 @@ const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg, gasCoin?: S
     console.error(e);
   }
   return undefined;
-};
-
-const splitGasCoins = async (): Promise<boolean> => {
-  try {
-    const suiBalance = await suiKit.getBalance(SUI_TYPE_ARG);
-    if (suiBalance.coinObjectCount < batchSize) {
-      // split coins
-      const totalAmount = BigNumber(suiBalance.totalBalance).div(batchSize).precision(9).toNumber();
-      const amounts = Array(batchSize - 1).fill(totalAmount);
-      const tx = new SuiTxBlock();
-      tx.setSender(suiKit.currentAddress());
-
-      const coins = tx.splitSUIFromGas(amounts);
-      tx.transferObjects(
-        amounts.map((_, idx) => coins[idx]),
-        suiKit.currentAddress()
-      );
-
-      const txBuildBytes = await tx.txBlock.build({
-        client: suiKit.client(),
-        protocolConfig: await getProtocolConfig(),
-      });
-
-      const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
-      const res = await suiKit.client().executeTransactionBlock({
-        transactionBlock: bytes,
-        signature,
-        options: {
-          showEffects: true,
-        },
-      });
-
-      if (res.effects && res.effects.status.status === "success") {
-        console.log(`success: ${res.digest}`);
-      } else {
-        console.error(`failed: ${res.digest}`);
-        return false;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      return true;
-    }
-    return true;
-  } catch (error) {
-    console.error(error);
-    return false;
-  }
 };
 
 const timeout = async (ms: number) => {
@@ -307,13 +254,6 @@ const main = async () => {
       }
       tasks = [];
       results = [];
-      // try {
-      // } catch (e) {
-      //   Logger.error(JSON.stringify(e));
-      //   // counters = await suiKit.getObjects(counters.map((c) => c.objectId));
-      // } finally {
-      //   // await new Promise((resolve) => setTimeout(resolve, 2000));
-      // }
       iter++;
     }
   } catch (e) {
