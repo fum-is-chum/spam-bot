@@ -296,7 +296,7 @@ const main = async () => {
           gasCoin.totalBalance === "0" ||
           BigNumber(gasCoin.totalBalance)
             .shiftedBy(-1 * 9)
-            .lt(0.1)
+            .lt(0.05)
         ) {
           targetAddresses.push(suiKits[i].currentAddress());
         }
@@ -309,7 +309,7 @@ const main = async () => {
 
     if (targetAddresses.length > 0) {
       Logger.info(`Requesting gas coin for addresses: ${targetAddresses.join(", ")}`);
-      // await requestGasCoin(suiKits[0], targetAddresses);
+      await requestGasCoin(suiKits[0], targetAddresses);
     }
 
     // create counter objects
@@ -371,6 +371,8 @@ const main = async () => {
 
       // check epoch
       if (executedEpoch === initialEpoch + 1) {
+        // reset protocol config
+        protocolConfig = null;
         // register previous epoch count to counter object
         tasks.push(
           ...counters.map(async (counter, idx) => {
