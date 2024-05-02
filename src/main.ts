@@ -1,4 +1,4 @@
-import { CoinStruct, SuiObjectData } from "@mysten/sui.js/client";
+import { CoinStruct, SuiObjectChange, SuiObjectData } from "@mysten/sui.js/client";
 import { SUI_TYPE_ARG, SuiKit, SuiObjectArg, SuiTxBlock } from "@scallop-io/sui-kit";
 import BigNumber from "bignumber.js";
 import * as dotenv from "dotenv";
@@ -7,6 +7,7 @@ import { Logger } from "./utils/logger";
 import { ProtocolConfig } from "@mysten/sui.js/client";
 import { shuffle } from "./utils/common";
 import { SpamTxBuilder } from "./contract";
+import { SuiOwnedObject } from "@scallop-io/sui-kit/dist/libs/suiModel";
 dotenv.config();
 
 // const secretKey = process.env.secretKey;
@@ -18,7 +19,7 @@ dotenv.config();
 const mnemonics = process.env.MNEMONICS!;
 const batchSize = +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
 
-let gasCoins: null | CoinStruct[] = null;
+// let gasCoins: null | CoinStruct[] = null;
 console.log(`Batch Size: ${batchSize}`);
 
 const suiKit: SuiKit = new SuiKit({
@@ -34,10 +35,19 @@ const getProtocolConfig = async () => {
   return protocolConfig;
 };
 
-const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg) => {
+const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg, gasCoin?: SuiObjectData) => {
   try {
     const tx = new SuiTxBlock();
     tx.setSender(suiKit.currentAddress());
+    if (!!gasCoin) {
+      tx.setGasPayment([
+        {
+          objectId: gasCoin.objectId,
+          version: gasCoin.version,
+          digest: gasCoin.digest,
+        },
+      ]);
+    }
     SpamTxBuilder.increment_counter(tx, counterObj);
 
     Logger.info(`Sending spam with node ${suiKit.suiInteractor.currentFullNode}`);
@@ -53,21 +63,21 @@ const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg) => {
       signature,
       options: {
         showEffects: true,
+        showObjectChanges: true,
       },
     });
 
     if (res.effects?.status.status === "success") {
       Logger.success(`Success spam: ${res.digest} with node ${suiKit.suiInteractor.currentFullNode}`);
-      return true;
+      return [...res.objectChanges!]; // [sui, counter]
     } else {
       console.error(res.errors ? res.errors[0] : "Error occurred");
-      return false;
+      return undefined;
     }
-
   } catch (e) {
     console.error(e);
   }
-  return false;
+  return undefined;
 };
 
 const splitGasCoins = async (): Promise<boolean> => {
@@ -128,11 +138,11 @@ const requestGasCoin = async (suiKit: SuiKit, addresses: string[]) => {
   try {
     const tx = new SuiTxBlock();
     tx.setSender(suiKit.currentAddress());
-    
+
     const coins = tx.splitSUIFromGas(addresses.map(() => 1e8));
     addresses.map((_, idx) => {
       tx.transferObjects([coins[idx]], addresses[idx]);
-    })
+    });
 
     const txBuildBytes = await tx.txBlock.build({
       client: suiKit.client(),
@@ -153,7 +163,7 @@ const requestGasCoin = async (suiKit: SuiKit, addresses: string[]) => {
       Logger.error(res.errors ? res.errors[0] : "Error occurred");
     }
   } catch (e) {
-    console.error
+    console.error;
   }
 };
 
@@ -182,34 +192,21 @@ const createCounterObject = async (suiKit: SuiKit) => {
   }
 };
 
-const getCounterObject = async (suiKit: SuiKit, id?: string) => {
+const getCounterObject = async (suiKit: SuiKit) => {
   // create new counter if not exists
   const get = async () => {
-    if(!id) {
-      const counters = await suiKit.client().getOwnedObjects({
-        owner: suiKit.currentAddress(),
-        filter: {
-          MatchAny: [
-            {
-              StructType: "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter",
-            },
-          ],
-        },
-        limit: 1,
-      });
-      return counters.data.length > 0 ? counters.data[0].data : null;
-    } else {
-      const counter = await suiKit.client().getObject({
-        id,
-        options: {
-          showContent: true,
-          showPreviousTransaction: true
-        }
-      });
-      if(!counter.data) throw new Error(`Failed to get counter object with id ${id}`);
-      
-      return counter.data;
-    }
+    const counters = await suiKit.client().getOwnedObjects({
+      owner: suiKit.currentAddress(),
+      filter: {
+        MatchAny: [
+          {
+            StructType: "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter",
+          },
+        ],
+      },
+      limit: 1,
+    });
+    return counters.data.length > 0 ? counters.data[0].data : null;
   };
 
   const existing = await get();
@@ -229,6 +226,7 @@ const main = async () => {
   try {
     const suiKits: SuiKit[] = Array(batchSize).fill(null);
     const counters: SuiObjectData[] = Array(batchSize).fill(null);
+    const gasCoins: SuiObjectData[] = Array(batchSize).fill(null);
 
     for (let i = 0; i < batchSize; i++) {
       suiKits[i] = new SuiKit({
@@ -259,7 +257,6 @@ const main = async () => {
       shuffle(MAIN_NODES);
     }
 
-    console.log(targetAddresses);
     Logger.info("-".repeat(80));
     Logger.info(`Running with ${batchSize} accounts`);
 
@@ -275,33 +272,48 @@ const main = async () => {
         const counter = await getCounterObject(suiKits[i]);
         if (!counter) throw new Error("Failed to get counter object");
         counters[i] = counter;
-      })
+      });
     }
     await Promise.all(tasks.map((t) => t()));
+
     tasks = [];
+    let results = [];
 
     await getProtocolConfig();
 
-    let results = [];
     let iter = 0;
-
-    while (iter === 0) {
+    while (iter < +(process.env.ITER ?? 1)) {
       for (let i = 0; i < suiKits.length; i++) {
-        tasks.push(Promise.race([executeSpam(suiKits[i], counters[i]), timeout(30000)]));
+        tasks.push(Promise.race([executeSpam(suiKits[i], counters[i], gasCoins[i]), timeout(10000)]));
       }
-      try {
-        results = await Promise.allSettled(tasks);
-        for(let i = 0; i < results.length; i++) {
-          if(results[i].status === "fulfilled") {
-            // update counter object
-            counters[i] = await getCounterObject(suiKits[i], counters[i].objectId);
-          }
+      results = await Promise.allSettled(tasks);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // update objects
+      for (let i = 0; i < results.length; i++) {
+        if (results[i].status === "fulfilled") {
+          let res = (results[i] as PromiseFulfilledResult<any>).value;
+          gasCoins[i] = res.find(
+            (item: SuiObjectChange) =>
+              "objectType" in item && item.objectType === "0x2::coin::Coin<0x2::sui::SUI>"
+          );
+          counters[i] = res.find(
+            (item: SuiObjectData) =>
+              "objectType" in item &&
+              item.objectType ===
+                "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter"
+          );
+          res = null;
         }
-      } finally {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        tasks = [];
-        results = [];
       }
+      tasks = [];
+      results = [];
+      // try {
+      // } catch (e) {
+      //   Logger.error(JSON.stringify(e));
+      //   // counters = await suiKit.getObjects(counters.map((c) => c.objectId));
+      // } finally {
+      //   // await new Promise((resolve) => setTimeout(resolve, 2000));
+      // }
       iter++;
     }
   } catch (e) {
