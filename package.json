@@ -1,0 +1,25 @@
+{
+  "name": "scallop-arbitrage-bot",
+  "version": "1.0.0",
+  "description": "Arbitrage with scallop sdk flashloan",
+  "main": "main.ts",
+  "scripts": {
+    "start": "NODE_OPTIONS=--max-old-space-size=800 ts-node src/main.ts"
+  },
+  "author": "team@scallop.io",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@mysten/sui.js": "^0.52.0",
+    "@scallop-io/sui-kit": "^0.44.0",
+    "@scallop-io/sui-scallop-sdk": "^0.44.18",
+    "aftermath-ts-sdk": "^1.1.7",
+    "bignumber.js": "^9.1.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.10",
+    "ts-node": "^10.9.1",
+    "tslib": "^2.6.2",
+    "typescript": "^5.2.2"
+  }
+}
