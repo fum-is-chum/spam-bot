@@ -11,10 +11,12 @@ import { SuiObjectRef } from "@mysten/sui.js/src/transactions";
 dotenv.config();
 
 type CounterObject = {
-  readyToRegister: SuiObjectData[];
-  readyToClaim: SuiObjectData[];
+  readyToRegister: SuiObjectData | undefined;
+  readyToClaim: SuiObjectData | undefined;
+  registered: {
+    [k in string]: SuiObjectData;
+  };
   currentCounter: SuiObjectData | undefined;
-  outdated: SuiObjectData[];
 };
 
 const mnemonics = process.env.MNEMONICS!;
@@ -22,14 +24,13 @@ const batchSize = +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
 
 console.log(`Batch Size: ${batchSize}`);
 
-const suiKit: SuiKit = new SuiKit({
-  mnemonics,
-  // secretKey: parsedSecretKey!
-});
-
 let protocolConfig: null | ProtocolConfig = null;
 const getProtocolConfig = async () => {
   if (!protocolConfig) {
+    const suiKit: SuiKit = new SuiKit({
+      mnemonics,
+      // secretKey: parsedSecretKey!
+    });
     protocolConfig = await suiKit.client().getProtocolConfig();
   }
   return protocolConfig;
@@ -127,7 +128,7 @@ const requestGasCoin = async (suiKit: SuiKit, addresses: string[]) => {
       Logger.error(res.errors ? res.errors[0] : "Error occurred");
     }
   } catch (e) {
-    console.error;
+    console.error(e);
   }
 };
 
@@ -164,65 +165,115 @@ const createCounterObject = async (suiKit: SuiKit) => {
   }
 };
 
-const getCounterObject = async (suiKit: SuiKit) => {
-  // create new counter if not exists
-  const get = async () => {
-    const counters = await suiKit.client().getOwnedObjects({
-      owner: suiKit.currentAddress(),
-      filter: {
-        MatchAny: [
-          {
-            StructType: "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter",
-          },
-        ],
-      },
-      limit: 1,
-    });
+const getCounterObjects = async (suiKit: SuiKit) => {
+  try {
+    // create new counter if not exists
+    const get = async () => {
+      const counters = await suiKit.client().getOwnedObjects({
+        owner: suiKit.currentAddress(),
+        filter: {
+          MatchAny: [
+            {
+              StructType: "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter",
+            },
+          ],
+        },
+        limit: 50,
+      });
 
-    const results: CounterObject = {
-      readyToRegister: [],
-      readyToClaim: [],
-      currentCounter: undefined,
-      outdated: [],
-    };
-    if (counters.data.length === 0) return results;
+      const results: CounterObject = {
+        readyToRegister: undefined,
+        readyToClaim: undefined,
+        currentCounter: undefined,
+        registered: {},
+      };
+      if (counters.data.length === 0) return results;
 
-    const counterObjects = await suiKit.getObjects(
-      counters.data.filter((item) => !!item.data).map((item) => item.data!.objectId),
-      {
-        showContent: true,
-      }
-    );
-
-    const currentEpoch = +(await getCurrentEpoch(suiKit));
-
-    counterObjects.forEach((counter) => {
-      if (counter.content?.dataType === "moveObject") {
-        const fields = counter.content.fields as any;
-        if (+fields.epoch < currentEpoch - 2) {
-          results.outdated.push(counter);
-        } else if (+fields.epoch === currentEpoch - 2) {
-          results.readyToClaim.push(counter);
-        } else if (+fields.epoch === currentEpoch - 1) {
-          results.readyToRegister.push(counter);
-        } else if (fields.epoch === currentEpoch) {
-          results.currentCounter = counter;
+      const counterObjects = await suiKit.getObjects(
+        counters.data.map((item) => item.data!.objectId),
+        {
+          showContent: true,
         }
+      );
+
+      const currentEpoch = +(await getCurrentEpoch(suiKit));
+      const readyToRegister: SuiObjectData[] = [];
+      const registered: SuiObjectData[] = [];
+
+      counterObjects.forEach((counter) => {
+        if (counter.content?.dataType === "moveObject") {
+          const fields = counter.content.fields as {
+            epoch: string;
+            registered: boolean;
+            tx_count: string;
+          };
+
+          const isOutdated = +fields.epoch < currentEpoch - 2;
+          if(isOutdated) return;
+
+          const isClaimable = +fields.epoch === currentEpoch - 2 && fields.registered;
+          if (isClaimable) {
+            if (
+              !results.readyToClaim ||
+              (results.readyToClaim.content?.dataType === "moveObject" &&
+                +(results.readyToClaim.content.fields as any).tx_count < +fields.tx_count)
+            ) {
+              results.readyToClaim = counter;
+            }
+          } else if (+fields.epoch === currentEpoch - 1) {
+            if (fields.registered) {
+              registered.push(counter);
+            } else {
+              readyToRegister.push(counter);
+            }
+          } else if (+fields.epoch === currentEpoch) {
+            results.currentCounter = counter;
+          }
+        }
+      });
+
+      // checks for registered counter
+      if (registered.length > 0) {
+        registered.forEach((counter) => {
+          const epoch = (counter.content as any).fields.epoch;
+          if (results.registered[epoch]) throw new Error(`Duplicate registered counter for epoch ${epoch}`);
+          results.registered[epoch] = counter;
+        });
       }
-    });
-    return results;
-  };
 
-  let existing = await get();
-  if (existing.currentCounter) return existing;
+      if (readyToRegister.length > 0) {
+        // remove counter with epoch that already has registered counter
+        readyToRegister.forEach((counter) => {
+          const epoch = (counter.content as any).fields.epoch;
+          if (results.registered[epoch]) {  
+            // already exist registered counter
+            return;
+          } else {
+            if (
+              !results.readyToRegister ||
+              +(results.readyToRegister.content as any).fields.tx_count < +(counter.content as any).fields.tx_count
+            ) {
+              results.readyToRegister = counter;
+            }
+          }
+        });
+      }
+      return results;
+    };
 
-  await createCounterObject(suiKit);
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+    let existing = await get();
+    if (existing.currentCounter) return existing;
 
-  existing = await get();
-  if (existing.currentCounter) return existing;
+    await createCounterObject(suiKit);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-  throw new Error("Failed to create counter object");
+    existing = await get();
+    if (existing.currentCounter) return existing;
+
+    throw new Error("Failed to create counter object");
+  } catch (e) {
+    Logger.error(JSON.stringify(e));
+  }
 };
 
 const updateObject = async (obj: SuiObjectData, ref?: SuiObjectRef) => {
@@ -234,7 +285,7 @@ const updateObject = async (obj: SuiObjectData, ref?: SuiObjectRef) => {
 const registerCounter = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
   const tx = new SuiTxBlock();
   tx.setSender(suiKit.currentAddress());
-  if (!!gasCoin) {
+  if (gasCoin) {
     tx.setGasPayment([
       {
         objectId: gasCoin.objectId,
@@ -320,7 +371,7 @@ const claimReward = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: Sui
   }
 };
 
-const destroyCounter = async(suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
+const destroyCounter = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
   const tx = new SuiTxBlock();
   tx.setSender(suiKit.currentAddress());
   if (!!gasCoin) {
@@ -350,23 +401,21 @@ const destroyCounter = async(suiKit: SuiKit, counter: SuiObjectData, gasCoin?: S
   if (res.effects?.status.status === "success") {
     Logger.success(`Success destroy counter ${counter.objectId} : ${res.digest}`);
     return {
-      mutations: [
-        res.effects.gasObject.reference,
-      ], // [gas, counter]
+      mutations: [res.effects.gasObject.reference], // [gas, counter]
       epoch: res.effects.executedEpoch,
     };
   } else {
     console.error(res.errors ? res.errors[0] : "Error occurred");
     return undefined;
   }
-}
+};
 
 const main = async () => {
   const targetAddresses = [];
   try {
     const suiKits: SuiKit[] = Array(batchSize).fill(null);
-    let counters: CounterObject[] = Array(batchSize).fill(null);
     const gasCoins: SuiObjectData[] = Array(batchSize).fill(null);
+    let counters: CounterObject[] = Array(batchSize).fill(null);
 
     for (let i = 0; i < batchSize; i++) {
       suiKits[i] = new SuiKit({
@@ -400,6 +449,7 @@ const main = async () => {
       }
       shuffle(MAIN_NODES);
     }
+    let initialEpoch = +(await getCurrentEpoch(suiKits[0]));
 
     Logger.info("-".repeat(80));
     Logger.info(`Running with ${batchSize} accounts`);
@@ -414,44 +464,52 @@ const main = async () => {
     }
 
     // create counter objects
-    let tasks = [];
     for (let i = 0; i < suiKits.length; i++) {
-      tasks.push(async () => {
-        let _tasks = [];
-        const counter = await getCounterObject(suiKits[i]);
-        if (!counter.currentCounter) throw new Error("Failed to get counter object");
+      const counter = await getCounterObjects(suiKits[i]);
+      if (!counter || !counter.currentCounter) throw new Error("Failed to get counter object");
 
-        // checks for ready to claim counters
-        _tasks.push(...counter.readyToClaim.map(async (obj) => await claimReward(suiKit, obj)));
-        if(_tasks.length > 0) {
-          await Promise.allSettled(_tasks);
-          counter.readyToClaim = []
-        }
+      console.log(`Account: ${suiKits[i].currentAddress()}`);
+      console.log("-".repeat(80));
+      console.dir(counter, { depth: null });
+      console.log("-".repeat(80));
+      console.log();
 
-        // checks for ready to register counters
-        _tasks.push(...counter.readyToRegister.map(async (obj) => await registerCounter(suiKit, obj)));
-        if(_tasks.length > 0) {
-          await Promise.allSettled(_tasks);
-          counter.readyToRegister = []
-        }
+      // checks for outdated counters
+      // const _tasks = counter.outdated.map((obj) => destroyCounter(suiKit, obj));
+      // if (_tasks.length > 0) {
+      //   await Promise.allSettled(_tasks);
+      //   counter.outdated = [];
+      // }
 
-        // checks for outdated counters
-        _tasks.push(...counter.outdated.map(async (obj) => await destroyCounter(suiKit, obj)));
-        if(_tasks.length > 0) {
-          await Promise.allSettled(_tasks);
-          counter.outdated = []
+      // checks for ready to claim counters
+      if (counter.readyToClaim) {
+        try {
+          await claimReward(suiKits[i], counter.readyToClaim);
+          counter.readyToClaim = undefined;
+        } catch (e: any) {
+          Logger.error(`Failed to claim reward ${counter.readyToClaim?.objectId}`);
+          Logger.error(e);
         }
-        counters[i] = counter;
-      });
+      }
+
+      // checks for ready to register counters
+      if (counter.readyToRegister) {
+        try {
+          await registerCounter(suiKits[i], counter.readyToRegister);
+          counter.readyToRegister = undefined;
+        } catch (e: any) {
+          Logger.error(`Failed to register counter ${counter.readyToRegister?.objectId}`);
+          Logger.error(e);
+        }
+      }
+      counters[i] = counter;
     }
 
-    await Promise.all(tasks.map((t) => t()));
-
-    tasks = [];
+    let tasks = [];
     let results = [];
     let claimCnt = 0;
     let iter = 0;
-    let initialEpoch = +(await getCurrentEpoch(suiKits[0]));
+    // let initialEpoch = +(await getCurrentEpoch(suiKits[0]));
 
     while (iter < +(process.env.ITER ?? 1)) {
       for (let i = 0; i < suiKits.length; i++) {
@@ -531,7 +589,7 @@ const main = async () => {
         // create new counter objects for new epoch
         for (let i = 0; i < suiKits.length; i++) {
           tasks.push(async () => {
-            const counter = await getCounterObject(suiKits[i]);
+            const counter = await getCounterObjects(suiKits[i]);
             if (!counter) throw new Error("Failed to get counter object");
             counters[i] = counter;
           });
@@ -584,7 +642,6 @@ const main = async () => {
   } catch (e) {
     Logger.error(JSON.stringify(e));
   }
-  return;
 };
 
 main()
