@@ -87,14 +87,6 @@ const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg, gasCoin?: S
   return undefined;
 };
 
-const timeout = async (ms: number) => {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      reject(new Error("Task took too long"));
-    }, ms);
-  });
-};
-
 const requestGasCoin = async (
   suiKit: SuiKit,
   target: {
@@ -374,44 +366,44 @@ const claimReward = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: Sui
   }
 };
 
-const destroyCounter = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
-  const tx = new SuiTxBlock();
-  tx.setSender(suiKit.currentAddress());
-  if (!!gasCoin) {
-    tx.setGasPayment([
-      {
-        objectId: gasCoin.objectId,
-        version: gasCoin.version,
-        digest: gasCoin.digest,
-      },
-    ]);
-  }
+// const destroyCounter = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
+//   const tx = new SuiTxBlock();
+//   tx.setSender(suiKit.currentAddress());
+//   if (!!gasCoin) {
+//     tx.setGasPayment([
+//       {
+//         objectId: gasCoin.objectId,
+//         version: gasCoin.version,
+//         digest: gasCoin.digest,
+//       },
+//     ]);
+//   }
 
-  SpamTxBuilder.destroy_counter(tx, counter);
-  const txBuildBytes = await tx.txBlock.build({
-    client: suiKit.client(),
-    protocolConfig: await getProtocolConfig(),
-  });
-  const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
-  // const borrowFlashLoanResult = await suiKit.signAndSendTxn(tx);
-  const res = await suiKit.client().executeTransactionBlock({
-    transactionBlock: bytes,
-    signature,
-    options: {
-      showEffects: true,
-    },
-  });
-  if (res.effects?.status.status === "success") {
-    Logger.success(`Success destroy counter ${counter.objectId} : ${res.digest}`);
-    return {
-      mutations: [res.effects.gasObject.reference], // [gas, counter]
-      epoch: res.effects.executedEpoch,
-    };
-  } else {
-    console.error(res.errors ? res.errors[0] : "Error occurred");
-    return undefined;
-  }
-};
+//   SpamTxBuilder.destroy_counter(tx, counter);
+//   const txBuildBytes = await tx.txBlock.build({
+//     client: suiKit.client(),
+//     protocolConfig: await getProtocolConfig(),
+//   });
+//   const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
+//   // const borrowFlashLoanResult = await suiKit.signAndSendTxn(tx);
+//   const res = await suiKit.client().executeTransactionBlock({
+//     transactionBlock: bytes,
+//     signature,
+//     options: {
+//       showEffects: true,
+//     },
+//   });
+//   if (res.effects?.status.status === "success") {
+//     Logger.success(`Success destroy counter ${counter.objectId} : ${res.digest}`);
+//     return {
+//       mutations: [res.effects.gasObject.reference], // [gas, counter]
+//       epoch: res.effects.executedEpoch,
+//     };
+//   } else {
+//     console.error(res.errors ? res.errors[0] : "Error occurred");
+//     return undefined;
+//   }
+// };
 
 const main = async () => {
   const targetAddresses = [];
