@@ -95,40 +95,43 @@ const timeout = async (ms: number) => {
   });
 };
 
-const requestGasCoin = async (suiKit: SuiKit, addresses: string[]) => {
-  try {
-    const tx = new SuiTxBlock();
-    tx.setSender(suiKit.currentAddress());
+const requestGasCoin = async (
+  suiKit: SuiKit,
+  target: {
+    address: string;
+    requiredGasAmount: string;
+  }[]
+) => {
+  const tx = new SuiTxBlock();
+  tx.setSender(suiKit.currentAddress());
 
-    const iter = +(process.env.ITER ?? 1);
-    // each tx need approx. 0.000774244SUI
-    const requiredGasFee = Math.max(0.000774244 * iter, 0.05);
+  const amount = target.map((item) => item.requiredGasAmount);
 
-    const coins = tx.splitSUIFromGas(addresses.map(() => BigNumber(requiredGasFee).shiftedBy(9).toString()));
-    addresses.map((_, idx) => {
-      tx.transferObjects([coins[idx]], addresses[idx]);
-    });
+  amount.forEach((t, i) => {
+    console.log(`Sending ${BigNumber(t).shiftedBy(-9).toString()} SUI to ${target[i].address}`);
+  });
+  const coins = tx.splitSUIFromGas(amount);
+  target.map(({ address }, idx) => {
+    tx.transferObjects([coins[idx]], address);
+  });
 
-    const txBuildBytes = await tx.txBlock.build({
-      client: suiKit.client(),
-      protocolConfig: await getProtocolConfig(),
-    });
-    const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
-    // const borrowFlashLoanResult = await suiKit.signAndSendTxn(tx);
-    const res = await suiKit.client().executeTransactionBlock({
-      transactionBlock: bytes,
-      signature,
-      options: {
-        showEffects: true,
-      },
-    });
-    if (res.effects?.status.status === "success") {
-      Logger.success(`Success send gas coins: ${res.digest}`);
-    } else {
-      Logger.error(res.errors ? res.errors[0] : "Error occurred");
-    }
-  } catch (e) {
-    console.error(e);
+  const txBuildBytes = await tx.txBlock.build({
+    client: suiKit.client(),
+    protocolConfig: await getProtocolConfig(),
+  });
+  const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
+  // const borrowFlashLoanResult = await suiKit.signAndSendTxn(tx);
+  const res = await suiKit.client().executeTransactionBlock({
+    transactionBlock: bytes,
+    signature,
+    options: {
+      showEffects: true,
+    },
+  });
+  if (res.effects?.status.status === "success") {
+    Logger.success(`Success send gas coins: ${res.digest}`);
+  } else {
+    throw new Error(res.effects?.status.error)
   }
 };
 
@@ -209,7 +212,7 @@ const getCounterObjects = async (suiKit: SuiKit) => {
           };
 
           const isOutdated = +fields.epoch < currentEpoch - 2;
-          if(isOutdated) return;
+          if (isOutdated) return;
 
           const isClaimable = +fields.epoch === currentEpoch - 2 && fields.registered;
           if (isClaimable) {
@@ -245,7 +248,7 @@ const getCounterObjects = async (suiKit: SuiKit) => {
         // remove counter with epoch that already has registered counter
         readyToRegister.forEach((counter) => {
           const epoch = (counter.content as any).fields.epoch;
-          if (results.registered[epoch]) {  
+          if (results.registered[epoch]) {
             // already exist registered counter
             return;
           } else {
@@ -355,7 +358,7 @@ const claimReward = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: Sui
     },
   });
   if (res.effects?.status.status === "success") {
-    Logger.success(`Success register counter ${counter.objectId} : ${res.digest}`);
+    Logger.success(`Success claim $SPAM ${counter.objectId} : ${res.digest}`);
     return {
       mutations: [
         res.effects.gasObject.reference,
@@ -431,20 +434,20 @@ const main = async () => {
         // calculate approximation gas coin needed for ITER times
         const iter = +(process.env.ITER ?? 1);
         // each tx need approx. 0.000774244SUI
-        const requiredGasFee = Math.max(0.000774244 * iter, 0.05);
+        const requiredGasFee = BigNumber(0.00079 * iter)
+          .shiftedBy(9)
+          .toString();
+        console.log(`Iter: ${iter}, Required Gas Fee: ${0.00079 * iter}`);
+
         const gasCoin = await suiKits[i].getBalance(SUI_TYPE_ARG);
-        console.log(
-          `${suiKits[i].currentAddress()} has ${BigNumber(gasCoin.totalBalance)
-            .shiftedBy(-1 * 9)
-            .toNumber()} SUI`
-        );
-        if (
-          gasCoin.totalBalance === "0" ||
-          BigNumber(gasCoin.totalBalance)
-            .shiftedBy(-1 * 9)
-            .lt(requiredGasFee)
-        ) {
-          targetAddresses.push(suiKits[i].currentAddress());
+        const gasBn = BigNumber(gasCoin.totalBalance);
+        console.log(`${suiKits[i].currentAddress()} has ${gasBn.shiftedBy(-9).toNumber()} SUI`);
+
+        if (gasCoin.totalBalance === "0" || gasBn.lt(requiredGasFee)) {
+          targetAddresses.push({
+            address: suiKits[i].currentAddress(),
+            requiredGasAmount: BigNumber(requiredGasFee).minus(gasBn).toString(),
+          });
         }
       }
       shuffle(MAIN_NODES);
@@ -455,12 +458,8 @@ const main = async () => {
     Logger.info(`Running with ${batchSize} accounts`);
 
     if (targetAddresses.length > 0) {
-      Logger.info(`Requesting gas coin for addresses: ${targetAddresses.join(", ")}`);
-      try {
-        await requestGasCoin(suiKits[0], targetAddresses);
-      } catch (e) {
-        Logger.error(JSON.stringify(e));
-      }
+      Logger.info(`Requesting gas coin for addresses: ${targetAddresses.map((t) => t.address).join(", ")}`);
+      await requestGasCoin(suiKits[0], targetAddresses);
     }
 
     // create counter objects
@@ -639,8 +638,8 @@ const main = async () => {
       }
       iter++;
     }
-  } catch (e) {
-    Logger.error(JSON.stringify(e));
+  } catch (e: any) {
+    Logger.error(e);
   }
 };
 
