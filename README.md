@@ -1,4 +1,6 @@
-### SPAM MULTI ACC BOT
+## SPAM MULTI ACC BOT
+
+
 Multi Wallet Account bot for $SPAM.
 
 This script will create `BATCH_SIZE` wallets from your mnemonic and use all the accounts to spam.
@@ -8,3 +10,6 @@ How to use:
 - Supply $SUI to the first account from the mnemonic wallet
 - Adjust `BATCH_SIZE` in `.env` for multiple wallet accounts (5 = 5 wallet accounts)
 - Adjust `ITER` in `.env` for iterations (100 = 100txns per wallet account)
+
+## DISCLAIMER
+This script is just for fun and learning purpose. There is no audits nor fully proper testings yet. Use it with your own risk
