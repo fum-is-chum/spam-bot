@@ -1,8 +1,7 @@
-## SPAM MULTI ACC BOT
+## $SPAM MULTI ACC BOT
+[More about $SPAM](https://spamsui.com/spam)
 
-
-Multi Wallet Account bot for $SPAM.
-
+Script for automating and running spam bot with multi wallets
 This script will create `BATCH_SIZE` wallets from your mnemonic and use all the accounts to spam.
 
 How to use:
