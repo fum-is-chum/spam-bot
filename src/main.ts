@@ -7,7 +7,7 @@ import { Logger } from "./utils/logger";
 import { ProtocolConfig } from "@mysten/sui.js/client";
 import { shuffle } from "./utils/common";
 import { SpamTxBuilder } from "./contract";
-import { SuiObjectRef } from "@mysten/sui.js/src/transactions";
+import { SuiObjectRef } from "@mysten/sui.js/client";
 dotenv.config();
 
 type CounterObject = {
@@ -36,18 +36,12 @@ const getProtocolConfig = async () => {
   return protocolConfig;
 };
 
-const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg, gasCoin?: SuiObjectData) => {
+const executeSpam = async (suiKit: SuiKit, counterObj: SuiObjectArg, gasCoin?: SuiObjectRef) => {
   try {
     const tx = new SuiTxBlock();
     tx.setSender(suiKit.currentAddress());
     if (!!gasCoin) {
-      tx.setGasPayment([
-        {
-          objectId: gasCoin.objectId,
-          version: gasCoin.version,
-          digest: gasCoin.digest,
-        },
-      ]);
+      tx.setGasPayment([gasCoin]);
     }
     SpamTxBuilder.increment_counter(tx, counterObj);
 
@@ -123,7 +117,7 @@ const requestGasCoin = async (
   if (res.effects?.status.status === "success") {
     Logger.success(`Success send gas coins: ${res.digest}`);
   } else {
-    throw new Error(res.effects?.status.error)
+    throw new Error(res.effects?.status.error);
   }
 };
 
@@ -407,9 +401,10 @@ const claimReward = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: Sui
 
 const main = async () => {
   const targetAddresses = [];
+  const totalIterations = +(process.env.ITER ?? 1);
   try {
     const suiKits: SuiKit[] = Array(batchSize).fill(null);
-    const gasCoins: SuiObjectData[] = Array(batchSize).fill(null);
+    const gasCoins: SuiObjectRef[] = Array(batchSize).fill(null);
     let counters: CounterObject[] = Array(batchSize).fill(null);
 
     for (let i = 0; i < batchSize; i++) {
@@ -424,12 +419,11 @@ const main = async () => {
       // i = 0 is the main account
       if (i > 0) {
         // calculate approximation gas coin needed for ITER times
-        const iter = +(process.env.ITER ?? 1);
         // each tx need approx. 0.000774244SUI
-        const requiredGasFee = BigNumber(0.00079 * iter)
+        const requiredGasFee = BigNumber(0.00079 * totalIterations)
           .shiftedBy(9)
           .toString();
-        console.log(`Iter: ${iter}, Required Gas Fee: ${0.00079 * iter}`);
+        console.log(`Total iterations: ${totalIterations}, Required Gas Fee: ${0.00079 * totalIterations}`);
 
         const gasCoin = await suiKits[i].getBalance(SUI_TYPE_ARG);
         const gasBn = BigNumber(gasCoin.totalBalance);
@@ -454,69 +448,77 @@ const main = async () => {
       await requestGasCoin(suiKits[0], targetAddresses);
     }
 
-    // create counter objects
-    for (let i = 0; i < suiKits.length; i++) {
-      const counter = await getCounterObjects(suiKits[i]);
-      if (!counter || !counter.currentCounter) throw new Error("Failed to get counter object");
+    const checkCounters = async () => {
+      // create counter objects
+      for (let i = 0; i < suiKits.length; i++) {
+        const counter = await getCounterObjects(suiKits[i]);
+        if (!counter || !counter.currentCounter) throw new Error("Failed to get counter object");
 
-      console.log(`Account: ${suiKits[i].currentAddress()}`);
-      console.log("-".repeat(80));
-      console.dir(counter, { depth: null });
-      console.log("-".repeat(80));
-      console.log();
+        console.log(`Account: ${suiKits[i].currentAddress()}`);
+        console.log("-".repeat(80));
+        console.dir(counter, { depth: null });
+        console.log("-".repeat(80));
+        console.log();
 
-      // checks for outdated counters
-      // const _tasks = counter.outdated.map((obj) => destroyCounter(suiKit, obj));
-      // if (_tasks.length > 0) {
-      //   await Promise.allSettled(_tasks);
-      //   counter.outdated = [];
-      // }
+        // checks for outdated counters
+        // const _tasks = counter.outdated.map((obj) => destroyCounter(suiKit, obj));
+        // if (_tasks.length > 0) {
+        //   await Promise.allSettled(_tasks);
+        //   counter.outdated = [];
+        // }
 
-      // checks for ready to claim counters
-      if (counter.readyToClaim) {
-        try {
-          await claimReward(suiKits[i], counter.readyToClaim);
-          counter.readyToClaim = undefined;
-        } catch (e: any) {
-          Logger.error(`Failed to claim reward ${counter.readyToClaim?.objectId}`);
-          Logger.error(e);
+        // checks for ready to claim counters
+        if (counter.readyToClaim) {
+          try {
+            await claimReward(suiKits[i], counter.readyToClaim);
+            counter.readyToClaim = undefined;
+          } catch (e: any) {
+            Logger.error(`Failed to claim reward ${counter.readyToClaim?.objectId}`);
+            Logger.error(e);
+          }
         }
-      }
 
-      // checks for ready to register counters
-      if (counter.readyToRegister) {
-        try {
-          await registerCounter(suiKits[i], counter.readyToRegister);
-          counter.readyToRegister = undefined;
-        } catch (e: any) {
-          Logger.error(`Failed to register counter ${counter.readyToRegister?.objectId}`);
-          Logger.error(e);
+        // checks for ready to register counters
+        if (counter.readyToRegister) {
+          try {
+            await registerCounter(suiKits[i], counter.readyToRegister);
+            counter.readyToRegister = undefined;
+          } catch (e: any) {
+            Logger.error(`Failed to register counter ${counter.readyToRegister?.objectId}`);
+            Logger.error(e);
+          }
         }
+        counters[i] = counter;
       }
-      counters[i] = counter;
-    }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    };
 
-    let tasks = [];
-    let results = [];
-    let claimCnt = 0;
-    let iter = 0;
+    await checkCounters();
+
+    let currIter = 0;
     // let initialEpoch = +(await getCurrentEpoch(suiKits[0]));
 
-    while (iter < +(process.env.ITER ?? 1)) {
+    while (currIter < totalIterations) {
+      const tasks = [];
       for (let i = 0; i < suiKits.length; i++) {
         const currentCounter = counters[i].currentCounter;
         if (currentCounter) {
           tasks.push(executeSpam(suiKits[i], currentCounter, gasCoins[i]));
         }
       }
-      results = await Promise.allSettled(tasks);
+      const results = await Promise.allSettled(tasks);
       await new Promise((resolve) => setTimeout(resolve, +(process.env.INTERVAL ?? 2000))); // safe value to allow rpc to obtain changes from the transactions
 
       let executedEpoch = 0;
       // update objects
       for (let i = 0; i < results.length; i++) {
         if (results[i].status === "fulfilled") {
-          const res = (results[i] as PromiseFulfilledResult<any>).value;
+          const res = (
+            results[i] as PromiseFulfilledResult<{
+              mutations: null | [SuiObjectRef, SuiObjectRef]; // [gas, counter]
+              epoch: string;
+            }>
+          ).value;
           if (res) {
             if (res.mutations) {
               if (res.mutations[0]) {
@@ -543,92 +545,15 @@ const main = async () => {
         }
       }
 
-      tasks = [];
-      results = [];
-
       // check epoch
-      if (executedEpoch >= initialEpoch + 1) {
+      if (executedEpoch > initialEpoch) {
         // reset protocol config
         protocolConfig = null;
-        // register the counter object
-        tasks.push(
-          ...counters.map(async (counter, idx) => {
-            const currentCounter = counter.currentCounter;
-            if (currentCounter) {
-              const res = await registerCounter(suiKits[idx], currentCounter, gasCoins[idx]);
-              if (res && res.mutations) {
-                if (res.mutations[0]) {
-                  if (!gasCoins[idx]) {
-                    gasCoins[idx] = res.mutations[0];
-                  } else {
-                    updateObject(gasCoins[idx], res.mutations[0]);
-                  }
-                }
-                if (res.mutations[1]) {
-                  updateObject(
-                    currentCounter,
-                    res.mutations.find((item) => item.objectId === currentCounter.objectId)
-                  );
-                }
-              }
-            }
-          })
-        );
-        await Promise.allSettled(tasks);
-        tasks = [];
-
-        // create new counter objects for new epoch
-        for (let i = 0; i < suiKits.length; i++) {
-          tasks.push(async () => {
-            const counter = await getCounterObjects(suiKits[i]);
-            if (!counter) throw new Error("Failed to get counter object");
-            counters[i] = counter;
-          });
-        }
-        await Promise.allSettled(tasks);
-        tasks = [];
-
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        claimCnt++;
+        // recheck counters
+        await checkCounters()
         initialEpoch = executedEpoch;
-        // Nice to have: set a Telegram notification bot on error registering counter
       }
-
-      // check for claim
-      if (claimCnt === 2) {
-        claimCnt = 0;
-
-        // claim $SPAM
-        tasks.push(
-          ...counters.map(async (counter, idx) => {
-            const currentCounter = counter.currentCounter;
-            if (currentCounter) {
-              const res = await claimReward(suiKits[idx], currentCounter, gasCoins[idx]);
-              if (res && res.mutations) {
-                if (res.mutations[0]) {
-                  if (!gasCoins[idx]) {
-                    gasCoins[idx] = res.mutations[0];
-                  } else {
-                    updateObject(gasCoins[idx], res.mutations[0]);
-                  }
-                }
-                if (res.mutations[1]) {
-                  updateObject(
-                    currentCounter,
-                    res.mutations.find((item) => item.objectId === currentCounter.objectId)
-                  );
-                }
-              }
-            }
-          })
-        );
-
-        await Promise.allSettled(tasks);
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-
-        tasks = [];
-      }
-      iter++;
+      currIter++;
     }
   } catch (e: any) {
     Logger.error(e);
