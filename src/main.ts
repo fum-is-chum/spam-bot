@@ -1,4 +1,4 @@
-import { SuiObjectData } from "@mysten/sui.js/client";
+import { SuiObjectChangeCreated, SuiObjectData } from "@mysten/sui.js/client";
 import { SUI_TYPE_ARG, SuiKit, SuiObjectArg, SuiTxBlock } from "@scallop-io/sui-kit";
 import BigNumber from "bignumber.js";
 import * as dotenv from "dotenv";
@@ -17,6 +17,13 @@ type CounterObject = {
     [k in string]: SuiObjectData;
   };
   currentCounter: SuiObjectData | undefined;
+};
+
+type FormattedCounter = {
+  objectId: string;
+  epoch: string;
+  registered: boolean;
+  tx_count: string;
 };
 
 const mnemonics = process.env.MNEMONICS!;
@@ -147,8 +154,11 @@ const createCounterObject = async (suiKit: SuiKit) => {
       showEffects: true,
     },
   });
+
+  const epoch = res.effects?.executedEpoch;
   if (res.effects?.status.status === "success") {
-    Logger.success(`Success create counter: ${res.digest}`);
+    Logger.success(`Success create counter for epoch ${epoch}: ${res.digest}`);
+    return res.objectChanges?.find(({ type }) => type === "created") as SuiObjectChangeCreated;
   } else {
     Logger.error(res.errors ? res.errors[0] : "Error occurred");
   }
@@ -161,11 +171,7 @@ const getCounterObjects = async (suiKit: SuiKit) => {
       const counters = await suiKit.client().getOwnedObjects({
         owner: suiKit.currentAddress(),
         filter: {
-          MatchAny: [
-            {
-              StructType: "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter",
-            },
-          ],
+          StructType: "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::UserCounter",
         },
         limit: 50,
       });
@@ -253,9 +259,13 @@ const getCounterObjects = async (suiKit: SuiKit) => {
     let existing = await get();
     if (existing.currentCounter) return existing;
 
-    await createCounterObject(suiKit);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const newCurrentCounter = await createCounterObject(suiKit);
+    if (newCurrentCounter) {
+      existing.currentCounter = newCurrentCounter;
+      return;
+    }
 
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     existing = await get();
     if (existing.currentCounter) return existing;
 
@@ -399,6 +409,41 @@ const claimReward = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: Sui
 //   }
 // };
 
+const formatCounter = (counter: CounterObject) => {
+  const format = (obj: SuiObjectData) => {
+    const fields = (obj.content as any).fields;
+    return {
+      objectId: obj.objectId,
+      epoch: fields.epoch,
+      registered: fields.registered,
+      tx_count: fields.tx_count,
+    } as FormattedCounter;
+  };
+  const results: any = {
+    readyToRegister: undefined,
+    readyToClaim: undefined,
+    currentCounter: undefined,
+    registered: {},
+  };
+  Object.entries(counter).map(([key, obj]) => {
+    // check if obj is map of (epoch: SuiObjectData)
+    if (key === "registered") {
+      results.registered = Object.entries(obj as { [k in string]: SuiObjectData }).reduce(
+        (prev, [epoch, epochCounterObj]) => {
+          prev[epoch] = format(epochCounterObj);
+          return prev;
+        },
+        {} as {
+          [k in string]: FormattedCounter;
+        }
+      );
+    } else if (obj) {
+      results[key] = format(obj as SuiObjectData);
+    }
+  });
+  return results;
+};
+
 const main = async () => {
   const targetAddresses = [];
   const totalIterations = +(process.env.ITER ?? 1);
@@ -456,7 +501,7 @@ const main = async () => {
 
         console.log(`Account: ${suiKits[i].currentAddress()}`);
         console.log("-".repeat(80));
-        console.dir(counter, { depth: null });
+        console.dir(formatCounter(counter), { depth: null });
         console.log("-".repeat(80));
         console.log();
 
@@ -490,11 +535,9 @@ const main = async () => {
         }
         counters[i] = counter;
       }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
     };
 
     await checkCounters();
-
     let currIter = 0;
     // let initialEpoch = +(await getCurrentEpoch(suiKits[0]));
 
@@ -550,7 +593,7 @@ const main = async () => {
         // reset protocol config
         protocolConfig = null;
         // recheck counters
-        await checkCounters()
+        await checkCounters();
         initialEpoch = executedEpoch;
       }
       currIter++;
