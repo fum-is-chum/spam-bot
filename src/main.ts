@@ -495,11 +495,11 @@ const main = async () => {
 
     const checkCounters = async () => {
       // create counter objects
-      for (let i = 0; i < suiKits.length; i++) {
-        const counter = await getCounterObjects(suiKits[i]);
+      const tasks = suiKits.map(async (suiKit, i) => {
+        const counter = await getCounterObjects(suiKit);
         if (!counter || !counter.currentCounter) throw new Error("Failed to get counter object");
 
-        console.log(`Account: ${suiKits[i].currentAddress()}`);
+        console.log(`Account: ${suiKit.currentAddress()}`);
         console.log("-".repeat(80));
         console.dir(formatCounter(counter), { depth: null });
         console.log("-".repeat(80));
@@ -515,7 +515,7 @@ const main = async () => {
         // checks for ready to claim counters
         if (counter.readyToClaim) {
           try {
-            await claimReward(suiKits[i], counter.readyToClaim);
+            await claimReward(suiKit, counter.readyToClaim);
             counter.readyToClaim = undefined;
           } catch (e: any) {
             Logger.error(`Failed to claim reward ${counter.readyToClaim?.objectId}`);
@@ -526,7 +526,7 @@ const main = async () => {
         // checks for ready to register counters
         if (counter.readyToRegister) {
           try {
-            await registerCounter(suiKits[i], counter.readyToRegister);
+            await registerCounter(suiKit, counter.readyToRegister);
             counter.readyToRegister = undefined;
           } catch (e: any) {
             Logger.error(`Failed to register counter ${counter.readyToRegister?.objectId}`);
@@ -534,7 +534,8 @@ const main = async () => {
           }
         }
         counters[i] = counter;
-      }
+      });
+      await Promise.all(tasks);
     };
 
     await checkCounters();
