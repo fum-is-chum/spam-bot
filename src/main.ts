@@ -27,7 +27,8 @@ type FormattedCounter = {
 };
 
 const mnemonics = process.env.MNEMONICS!;
-const batchSize = +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
+const secretKey = process.env.SECRET_KEY!;
+const batchSize = secretKey ? 1 : +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
 
 console.log(`Batch Size: ${batchSize}`);
 
@@ -36,7 +37,7 @@ const getProtocolConfig = async () => {
   if (!protocolConfig) {
     const suiKit: SuiKit = new SuiKit({
       mnemonics,
-      // secretKey: parsedSecretKey!
+      // secretKey: secretKey
     });
     protocolConfig = await suiKit.client().getProtocolConfig();
   }
@@ -370,45 +371,6 @@ const claimReward = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: Sui
   }
 };
 
-// const destroyCounter = async (suiKit: SuiKit, counter: SuiObjectData, gasCoin?: SuiObjectData) => {
-//   const tx = new SuiTxBlock();
-//   tx.setSender(suiKit.currentAddress());
-//   if (!!gasCoin) {
-//     tx.setGasPayment([
-//       {
-//         objectId: gasCoin.objectId,
-//         version: gasCoin.version,
-//         digest: gasCoin.digest,
-//       },
-//     ]);
-//   }
-
-//   SpamTxBuilder.destroy_counter(tx, counter);
-//   const txBuildBytes = await tx.txBlock.build({
-//     client: suiKit.client(),
-//     protocolConfig: await getProtocolConfig(),
-//   });
-//   const { bytes, signature } = await suiKit.signTxn(txBuildBytes);
-//   // const borrowFlashLoanResult = await suiKit.signAndSendTxn(tx);
-//   const res = await suiKit.client().executeTransactionBlock({
-//     transactionBlock: bytes,
-//     signature,
-//     options: {
-//       showEffects: true,
-//     },
-//   });
-//   if (res.effects?.status.status === "success") {
-//     Logger.success(`Success destroy counter ${counter.objectId} : ${res.digest}`);
-//     return {
-//       mutations: [res.effects.gasObject.reference], // [gas, counter]
-//       epoch: res.effects.executedEpoch,
-//     };
-//   } else {
-//     console.error(res.errors ? res.errors[0] : "Error occurred");
-//     return undefined;
-//   }
-// };
-
 const formatCounter = (counter: CounterObject) => {
   const format = (obj: SuiObjectData) => {
     const fields = (obj.content as any).fields;
@@ -456,9 +418,9 @@ const main = async () => {
       suiKits[i] = new SuiKit({
         fullnodeUrls: [...MAIN_NODES],
         mnemonics,
-        // secretKey: parsedSecretKey!,
+        // secretKey: secretKey,
       });
-      suiKits[i].switchAccount({ accountIndex: i });
+      if(!secretKey) suiKits[i].switchAccount({ accountIndex: i });
 
       // check for gas coin
       // i = 0 is the main account

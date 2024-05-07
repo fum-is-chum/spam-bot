@@ -10,7 +10,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@mysten/sui.js": "^0.52.0",
-    "@scallop-io/sui-kit": "^0.44.0",
+    "@scallop-io/sui-kit": "^0.45.0",
     "bignumber.js": "^9.1.2",
     "dotenv": "^16.3.1"
   },
