@@ -28,7 +28,7 @@ type FormattedCounter = {
 
 const mnemonics = process.env.MNEMONICS!;
 const secretKey = process.env.SECRET_KEY!;
-const batchSize = secretKey ? 1 : +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
+const batchSize = secretKey && !mnemonics ? 1 : +(process.env.BATCH_SIZE ?? MAIN_NODES.length);
 
 console.log(`Batch Size: ${batchSize}`);
 
@@ -415,12 +415,18 @@ const main = async () => {
     let counters: CounterObject[] = Array(batchSize).fill(null);
 
     for (let i = 0; i < batchSize; i++) {
-      suiKits[i] = new SuiKit({
-        fullnodeUrls: [...MAIN_NODES],
-        mnemonics,
-        // secretKey: secretKey,
-      });
-      if(!secretKey) suiKits[i].switchAccount({ accountIndex: i });
+      if(mnemonics) {
+        suiKits[i] = new SuiKit({
+          fullnodeUrls: [...MAIN_NODES],
+          mnemonics,
+        });
+      } else {
+        suiKits[i] = new SuiKit({
+          fullnodeUrls: [...MAIN_NODES],
+          secretKey,
+        });
+      }
+      suiKits[i].switchAccount({ accountIndex: i });
 
       // check for gas coin
       // i = 0 is the main account
