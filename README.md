@@ -10,6 +10,9 @@ How to use:
 - Adjust `BATCH_SIZE` in `.env` for multiple wallet accounts (5 = 5 wallet accounts)
 - Adjust `ITER` in `.env` for iterations (100 = 100txns per wallet account)
 
+### UPDATE
+Now you can collect your $SPAM to single wallet. Just add `TARGET_ADDRESS=[dest_address]` in your `.env` and run `pnpm transfer` to transfer all $SPAM from your multi wallets to the `dest_address`
+
 ## IMPORTANT
 Don't forget to run the bot at least once on every epoch change. This is required to register new counter and also claim your $SPAM reward.
 
