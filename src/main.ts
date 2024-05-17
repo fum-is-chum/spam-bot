@@ -204,10 +204,10 @@ const getCounterObjects = async (suiKit: SuiKit) => {
             tx_count: string;
           };
 
-          const isOutdated = +fields.epoch < currentEpoch - 2;
+          const isOutdated = +fields.epoch < currentEpoch - 2 && !fields.registered;
           if (isOutdated) return;
 
-          const isClaimable = +fields.epoch === currentEpoch - 2 && fields.registered;
+          const isClaimable = +fields.epoch <= currentEpoch - 2 && fields.registered;
           if (isClaimable) {
             if (
               !results.readyToClaim ||
@@ -415,7 +415,7 @@ const main = async () => {
     let counters: CounterObject[] = Array(batchSize).fill(null);
 
     for (let i = 0; i < batchSize; i++) {
-      if(mnemonics) {
+      if (mnemonics) {
         suiKits[i] = new SuiKit({
           fullnodeUrls: [...MAIN_NODES],
           mnemonics,
@@ -427,27 +427,22 @@ const main = async () => {
         });
       }
       suiKits[i].switchAccount({ accountIndex: i });
+      // calculate approximation gas coin needed for ITER times
+      // each tx need approx. 0.000774244SUI
+      const requiredGasFee = BigNumber(0.00079 * totalIterations)
+        .shiftedBy(9)
+        .toString();
+      console.log(`Total iterations: ${totalIterations}, Required Gas Fee: ${0.00079 * totalIterations}`);
 
-      // check for gas coin
-      // i = 0 is the main account
-      if (i > 0) {
-        // calculate approximation gas coin needed for ITER times
-        // each tx need approx. 0.000774244SUI
-        const requiredGasFee = BigNumber(0.00079 * totalIterations)
-          .shiftedBy(9)
-          .toString();
-        console.log(`Total iterations: ${totalIterations}, Required Gas Fee: ${0.00079 * totalIterations}`);
+      const gasCoin = await suiKits[i].getBalance(SUI_TYPE_ARG);
+      const gasBn = BigNumber(gasCoin.totalBalance);
+      console.log(`${suiKits[i].currentAddress()} has ${gasBn.shiftedBy(-9).toNumber()} SUI`);
 
-        const gasCoin = await suiKits[i].getBalance(SUI_TYPE_ARG);
-        const gasBn = BigNumber(gasCoin.totalBalance);
-        console.log(`${suiKits[i].currentAddress()} has ${gasBn.shiftedBy(-9).toNumber()} SUI`);
-
-        if (gasCoin.totalBalance === "0" || gasBn.lt(requiredGasFee)) {
-          targetAddresses.push({
-            address: suiKits[i].currentAddress(),
-            requiredGasAmount: BigNumber(requiredGasFee).minus(gasBn).toString(),
-          });
-        }
+      if (i > 0 && (gasCoin.totalBalance === "0" || gasBn.lt(requiredGasFee))) {
+        targetAddresses.push({
+          address: suiKits[i].currentAddress(),
+          requiredGasAmount: BigNumber(requiredGasFee).minus(gasBn).toString(),
+        });
       }
       shuffle(MAIN_NODES);
     }
